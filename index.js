@@ -56,12 +56,19 @@ const GAME_CONFIG = {
   rps: { maxPlayers: 2 },
   memory: { maxPlayers: 1 },
   snake: { maxPlayers: 1 },
+  connectfour: { maxPlayers: 2 },
+  gomoku: { maxPlayers: 2 },
+  reaction: { maxPlayers: 2 },
+  mathduel: { maxPlayers: 2 },
+  cardbattle: { maxPlayers: 2 },
+  memorybattle: { maxPlayers: 2 },
+  wordrace: { maxPlayers: 2 },
 };
 
 // ============================================================
 // HELPER FUNCTIONS
 // ============================================================
-function createRoom(gameId, host) {
+function createRoom(gameId, host, isPublic) {
   const roomId = generateRoomCode();
   const config = GAME_CONFIG[gameId] || { maxPlayers: 2 };
   const room = {
@@ -74,6 +81,7 @@ function createRoom(gameId, host) {
     chat: [],
     createdAt: new Date(),
     maxPlayers: config.maxPlayers,
+    isPublic: isPublic !== false,
   };
   rooms.set(roomId, room);
   return room;
@@ -96,9 +104,10 @@ function getRoomSafe(roomId) {
     players: room.players.map((p) => ({ id: p.id, name: p.name })),
     state: room.state,
     gameState: room.gameState,
-    chat: room.chat.slice(-50), // Last 50 messages
+    chat: room.chat.slice(-50),
     maxPlayers: room.maxPlayers,
     hostId: room.hostId,
+    isPublic: room.isPublic,
   };
 }
 
@@ -235,14 +244,12 @@ io.on('connection', (socket) => {
   });
 
   // --- ROOM: CREATE ---
-  socket.on('create_room', ({ gameId }, callback) => {
+  socket.on('create_room', ({ gameId, isPublic }, callback) => {
     const user = users.get(socket.id);
-    if (!user) return callback({ error: 'Kayıtlı değilsin' });
-
-    const room = createRoom(gameId, user);
+    if (!user) return callback({ error: 'Kayitli degilsin' });
+    const room = createRoom(gameId, user, isPublic);
     user.roomId = room.id;
     socket.join(room.id);
-
     console.log(`[+] Room created: ${room.id} (${gameId}) by ${user.name}`);
     callback({ success: true, room: getRoomSafe(room.id) });
   });
@@ -269,6 +276,14 @@ io.on('connection', (socket) => {
     console.log(`[+] ${user.name} joined room ${room.id}`);
     io.to(room.id).emit('room_updated', getRoomSafe(room.id));
     callback({ success: true, room: getRoomSafe(room.id) });
+  });
+
+  // --- GAME: GENERIC MOVE RELAY ---
+  socket.on('game_move', function(data, callback) {
+    const user = users.get(socket.id);
+    if (!user || !user.roomId) return callback && callback({ error: 'Masada degilsin' });
+    socket.to(user.roomId).emit('game_move', { ...data, senderId: user.id });
+    if (callback) callback({ success: true });
   });
 
   // --- ROOM: LEAVE ---
@@ -474,13 +489,20 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
+const GAME_DISPLAY_NAMES = {
+  xox: 'XOX', rps: 'Tas Kagit Makas', connectfour: '4 Sira',
+  gomoku: 'Bes Tas', reaction: 'Tepki Yarisi', mathduel: 'Matematik Duellosu',
+  cardbattle: 'Kart Savasi', memorybattle: 'Hafiza Savasi', wordrace: 'Kelime Yarisi',
+};
+
 app.get('/api/rooms', (req, res) => {
   const publicRooms = [];
   rooms.forEach((room) => {
-    if (room.state === 'waiting') {
+    if (room.state === 'waiting' && room.isPublic !== false) {
       publicRooms.push({
         id: room.id,
         gameId: room.gameId,
+        gameName: GAME_DISPLAY_NAMES[room.gameId] || room.gameId,
         players: room.players.length,
         maxPlayers: room.maxPlayers,
         hostName: room.players[0]?.name,
