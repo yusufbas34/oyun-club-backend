@@ -251,6 +251,7 @@ io.on('connection', (socket) => {
     user.roomId = room.id;
     socket.join(room.id);
     console.log(`[+] Room created: ${room.id} (${gameId}) by ${user.name}`);
+    if (isPublic !== false) broadcastPublicRooms();
     callback({ success: true, room: getRoomSafe(room.id) });
   });
 
@@ -275,6 +276,7 @@ io.on('connection', (socket) => {
 
     console.log(`[+] ${user.name} joined room ${room.id}`);
     io.to(room.id).emit('room_updated', getRoomSafe(room.id));
+    broadcastPublicRooms();
     callback({ success: true, room: getRoomSafe(room.id) });
   });
 
@@ -315,6 +317,7 @@ io.on('connection', (socket) => {
 
     console.log(`[▶] Game started in room ${room.id}`);
     io.to(room.id).emit('game_started', getRoomSafe(room.id));
+    broadcastPublicRooms();
     callback({ success: true });
   });
 
@@ -457,11 +460,9 @@ function handleLeaveRoom(socket) {
   socket.leave(room.id);
 
   if (room.players.length === 0) {
-    // Empty room - delete
     rooms.delete(room.id);
     console.log(`[x] Room deleted: ${room.id}`);
   } else {
-    // Transfer host if needed
     if (room.hostId === socket.id) {
       room.hostId = room.players[0].socketId;
     }
@@ -470,6 +471,7 @@ function handleLeaveRoom(socket) {
   }
 
   user.roomId = null;
+  broadcastPublicRooms();
 }
 
 // ============================================================
@@ -495,7 +497,7 @@ const GAME_DISPLAY_NAMES = {
   cardbattle: 'Kart Savasi', memorybattle: 'Hafiza Savasi', wordrace: 'Kelime Yarisi',
 };
 
-app.get('/api/rooms', (req, res) => {
+function getPublicRoomsList() {
   const publicRooms = [];
   rooms.forEach((room) => {
     if (room.state === 'waiting' && room.isPublic !== false) {
@@ -506,10 +508,20 @@ app.get('/api/rooms', (req, res) => {
         players: room.players.length,
         maxPlayers: room.maxPlayers,
         hostName: room.players[0]?.name,
+        createdAt: room.createdAt instanceof Date ? room.createdAt.getTime() : Date.now(),
       });
     }
   });
-  res.json({ rooms: publicRooms });
+  publicRooms.sort((a, b) => a.createdAt - b.createdAt);
+  return publicRooms.slice(0, 15);
+}
+
+function broadcastPublicRooms() {
+  io.emit('rooms_updated', { rooms: getPublicRoomsList() });
+}
+
+app.get('/api/rooms', (req, res) => {
+  res.json({ rooms: getPublicRoomsList() });
 });
 
 app.get('/api/stats', (req, res) => {
