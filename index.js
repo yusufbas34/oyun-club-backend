@@ -461,6 +461,29 @@ io.on('connection', (socket) => {
     if (callback) callback({ success: true });
   });
 
+    // Arkadaşı çıkar
+  socket.on('remove_friend', async ({ friendId }, callback) => {
+    const me = users.get(socket.id);
+    if (!me) return callback({ error: 'Kayıtlı değilsin' });
+    if (!dbReady()) return callback({ error: 'DB bağlı değil' });
+    try {
+      await DBUser.findOneAndUpdate({ userId: me.id }, { $pull: { friends: friendId } });
+      await DBUser.findOneAndUpdate({ userId: friendId }, { $pull: { friends: me.id } });
+      callback({ success: true });
+    } catch (err) { callback({ error: 'Hata' }); }
+  });
+
+  // Oyun daveti gönder
+  socket.on('invite_friend', ({ toUserId, roomId, gameId }, callback) => {
+    const me = users.get(socket.id);
+    if (!me) return callback && callback({ error: 'Kayıtlı değilsin' });
+    const targetSocketId = onlineSockets.get(toUserId);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('game_invite', { fromId: me.id, fromName: me.name, roomId, gameId });
+    }
+    if (callback) callback({ success: true });
+  });
+  
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) onlineSockets.delete(user.id);
