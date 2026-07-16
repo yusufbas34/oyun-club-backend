@@ -29,6 +29,23 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 const DBUser = mongoose.model('User', userSchema);
 
+const scoreSchema = new mongoose.Schema({
+  userId:  { type: String, required: true },
+  name:    { type: String, required: true },
+  gameId:  { type: String, required: true },
+  result:  { type: String, enum: ['win', 'loss', 'draw'], required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+const Score = mongoose.model('Score', scoreSchema);
+
+const lobbyMsgSchema = new mongoose.Schema({
+  userId: String,
+  name:   String,
+  text:   String,
+  createdAt: { type: Date, default: Date.now },
+});
+const LobbyMessage = mongoose.model('LobbyMessage', lobbyMsgSchema);
+
 const dbReady = () => mongoose.connection.readyState === 1;
 
 // ============================================================
@@ -187,28 +204,56 @@ io.on('connection', (socket) => {
 
   // --- KAYIT ---
   socket.on('register', ({ name, userId }, callback) => {
+    const trimmedName = (name || 'Anonim').trim();
+
+    // Aynı isimde başka bir bağlı kullanıcı var mı kontrol et
+    for (const [sid, u] of users.entries()) {
+      if (sid !== socket.id && u.name.toLowerCase() === trimmedName.toLowerCase()) {
+        return callback({ success: false, error: 'name_taken' });
+      }
+    }
+
     const id = userId || uuidv4();
-    const user = { id, name: name || 'Anonim', socketId: socket.id, roomId: null };
+    const user = { id, name: trimmedName, socketId: socket.id, roomId: null };
     users.set(socket.id, user);
     onlineSockets.set(id, socket.id);
 
     if (dbReady()) {
       DBUser.findOneAndUpdate(
         { userId: id },
-        { $set: { userId: id, name: user.name } },
+        { $set: { userId: id, name: trimmedName } },
         { upsert: true, new: true }
       ).catch(err => console.error('[DB] register hatası:', err));
     }
 
-    console.log(`[*] Kayıt: ${user.name} (${id})`);
-    callback({ success: true, user: { id, name: user.name } });
+    console.log(`[*] Kayıt: ${trimmedName} (${id})`);
+    callback({ success: true, user: { id, name: trimmedName } });
+  });
+
+  // --- İSİM DEĞİŞTİR ---
+  socket.on('rename_user', ({ newName }, callback) => {
+    if (!newName || !callback) return;
+    const trimmed = newName.trim();
+    const me = users.get(socket.id);
+    if (!me) return callback({ error: 'Kayıtlı değilsin' });
+
+    for (const [sid, u] of users.entries()) {
+      if (sid !== socket.id && u.name.toLowerCase() === trimmed.toLowerCase()) {
+        return callback({ error: 'name_taken' });
+      }
+    }
+
+    me.name = trimmed;
+    if (dbReady()) {
+      DBUser.findOneAndUpdate({ userId: me.id }, { $set: { name: trimmed } }).catch(() => {});
+    }
+    callback({ success: true, name: trimmed });
   });
 
   // ============================================================
   // ARKADAŞ SİSTEMİ
   // ============================================================
 
-  // Kullanıcı ara
   socket.on('search_user', async ({ query }, callback) => {
     if (!dbReady()) return callback({ error: 'DB bağlı değil' });
     try {
@@ -223,7 +268,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Arkadaşlık isteği gönder
   socket.on('friend_request', async ({ toId }, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback({ error: 'Kayıtlı değilsin' });
@@ -243,7 +287,6 @@ io.on('connection', (socket) => {
         { $push: { pendingRequests: { fromId: me.id, fromName: me.name } } }
       );
 
-      // Karşı taraf çevrimiçiyse bildir
       const targetSocketId = onlineSockets.get(toId);
       if (targetSocketId) {
         io.to(targetSocketId).emit('friend_request_incoming', { fromId: me.id, fromName: me.name });
@@ -255,14 +298,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Arkadaşlık isteğini kabul et
   socket.on('accept_friend', async ({ fromId }, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback({ error: 'Kayıtlı değilsin' });
     if (!dbReady()) return callback({ error: 'DB bağlı değil' });
 
     try {
-      // İkisini de arkadaş olarak ekle, isteği temizle
       await DBUser.findOneAndUpdate(
         { userId: me.id },
         {
@@ -275,7 +316,6 @@ io.on('connection', (socket) => {
         { $addToSet: { friends: me.id } }
       );
 
-      // Karşı tarafa bildir
       const fromSocketId = onlineSockets.get(fromId);
       if (fromSocketId) {
         io.to(fromSocketId).emit('friend_accepted', { byId: me.id, byName: me.name });
@@ -287,7 +327,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Arkadaşlık isteğini reddet
   socket.on('reject_friend', async ({ fromId }, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback({ error: 'Kayıtlı değilsin' });
@@ -304,7 +343,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Arkadaş listesini getir
   socket.on('get_friends', async (_, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback({ error: 'Kayıtlı değilsin' });
@@ -461,7 +499,6 @@ io.on('connection', (socket) => {
     if (callback) callback({ success: true });
   });
 
-    // Arkadaşı çıkar
   socket.on('remove_friend', async ({ friendId }, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback({ error: 'Kayıtlı değilsin' });
@@ -473,7 +510,6 @@ io.on('connection', (socket) => {
     } catch (err) { callback({ error: 'Hata' }); }
   });
 
-  // Oyun daveti gönder
   socket.on('invite_friend', ({ toUserId, roomId, gameId }, callback) => {
     const me = users.get(socket.id);
     if (!me) return callback && callback({ error: 'Kayıtlı değilsin' });
@@ -483,7 +519,51 @@ io.on('connection', (socket) => {
     }
     if (callback) callback({ success: true });
   });
-  
+
+  // ============================================================
+  // YENİ: OYUN SKORU KAYDET
+  // ============================================================
+  socket.on('submit_score', async ({ gameId, result }) => {
+    const user = users.get(socket.id);
+    if (!user || !gameId || !result) return;
+    if (!dbReady()) return;
+    try {
+      await Score.create({ userId: user.id, name: user.name, gameId, result });
+    } catch (err) {
+      console.error('[DB] submit_score hatası:', err);
+    }
+  });
+
+  // ============================================================
+  // YENİ: LOBİ SOHBETİ
+  // ============================================================
+  socket.on('lobby_message', async ({ text }, callback) => {
+    const user = users.get(socket.id);
+    if (!user || !text) return;
+    const msg = {
+      userId: user.id,
+      name: user.name,
+      text: text.slice(0, 300),
+      createdAt: Date.now(),
+    };
+    if (dbReady()) {
+      LobbyMessage.create(msg).catch(() => {});
+    }
+    io.emit('lobby_message', msg);
+    if (callback) callback({ success: true });
+  });
+
+  socket.on('get_lobby_messages', async (_, callback) => {
+    if (!callback) return;
+    if (!dbReady()) return callback({ messages: [] });
+    try {
+      const msgs = await LobbyMessage.find().sort({ createdAt: -1 }).limit(100).lean();
+      callback({ messages: msgs.reverse() });
+    } catch (err) {
+      callback({ messages: [] });
+    }
+  });
+
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) onlineSockets.delete(user.id);
@@ -497,7 +577,7 @@ io.on('connection', (socket) => {
 // REST API
 // ============================================================
 app.get('/', (req, res) => {
-  res.json({ name: 'oyun.club API', version: '2.0.0', status: 'running', rooms: rooms.size, users: users.size });
+  res.json({ name: 'oyun.club API', version: '2.1.0', status: 'running', rooms: rooms.size, users: users.size });
 });
 
 app.get('/api/health', (req, res) => {
@@ -515,13 +595,48 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
+// YENİ: LİDERLİK TABLOSU
+app.get('/api/leaderboard', async (req, res) => {
+  const { game } = req.query;
+  if (!dbReady()) return res.json({ leaderboard: [] });
+  try {
+    const match = game ? { gameId: game } : {};
+    const results = await Score.aggregate([
+      { $match: match },
+      { $group: {
+        _id: '$userId',
+        name: { $last: '$name' },
+        wins:   { $sum: { $cond: [{ $eq: ['$result', 'win'] },  1, 0] } },
+        losses: { $sum: { $cond: [{ $eq: ['$result', 'loss'] }, 1, 0] } },
+        draws:  { $sum: { $cond: [{ $eq: ['$result', 'draw'] }, 1, 0] } },
+        total:  { $sum: 1 },
+      }},
+      { $sort: { wins: -1, total: -1 } },
+      { $limit: 50 },
+    ]);
+    res.json({
+      leaderboard: results.map((r, i) => ({
+        rank: i + 1,
+        userId: r._id,
+        name: r.name,
+        wins: r.wins,
+        losses: r.losses,
+        draws: r.draws,
+        total: r.total,
+      })),
+    });
+  } catch (err) {
+    res.json({ leaderboard: [] });
+  }
+});
+
 // ============================================================
 // BAŞLAT
 // ============================================================
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`\n  ╔══════════════════════════════════════╗
-  ║     oyun.club Backend v2.0           ║
+  ║     oyun.club Backend v2.1           ║
   ║     Port: ${PORT}                       ║
   ║     DB: ${MONGODB_URI ? 'MongoDB ✅' : 'Bellek ⚠️ '}                ║
   ╚══════════════════════════════════════╝\n`);
