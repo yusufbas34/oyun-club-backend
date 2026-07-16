@@ -564,6 +564,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ============================================================
+  // YENİ: ÇEVRİMİÇİ KULLANICILAR (odada olmayan)
+  // ============================================================
+  socket.on('get_online_users', (_, callback) => {
+    if (!callback) return;
+    const me = users.get(socket.id);
+    const list = [];
+    users.forEach(function(u) {
+      if (u.socketId !== socket.id && !u.roomId) {
+        list.push({ userId: u.id, name: u.name });
+      }
+    });
+    callback({ users: list });
+  });
+
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) onlineSockets.delete(user.id);
